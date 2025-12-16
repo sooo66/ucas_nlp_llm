@@ -11,6 +11,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import torch  # noqa: E402
 from loguru import logger  # noqa: E402
 
 from utils import load_config, load_history
@@ -32,11 +33,37 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _summarize_history(run_name: str, history: Dict[str, List[float]]) -> Dict[str, float]:
+def _get_parameter_count_from_ckpt(run_name: str, output_root: Path) -> int | None:
+    for tag in ("best", "last"):
+        ckpt = output_root / run_name / f"{run_name}_{tag}.pt"
+        if not ckpt.exists():
+            continue
+        try:
+            state = torch.load(ckpt, map_location="cpu")
+            model_state = state.get("model_state", state)
+            if not isinstance(model_state, dict):
+                continue
+            return sum(t.numel() for t in model_state.values() if hasattr(t, "numel"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to read {} for parameter count: {}", ckpt, exc)
+    return None
+
+
+def _summarize_history(
+    run_name: str,
+    history: Dict[str, List[float]],
+    parameter_count: int | None = None,
+) -> Dict[str, float | int | None]:
     val_ppls = history.get("val_ppl", []) or []
     val_losses = history.get("val_loss", []) or []
     train_losses = history.get("train_loss", []) or []
     epochs = history.get("epoch", []) or []
+    if parameter_count is None:
+        raw_param = history.get("parameter_count")
+        if isinstance(raw_param, list):
+            parameter_count = raw_param[0] if raw_param else None
+        elif isinstance(raw_param, (int, float)):
+            parameter_count = int(raw_param)
     best_val_ppl = min(val_ppls) if val_ppls else None
     best_epoch = val_ppls.index(best_val_ppl) + 1 if best_val_ppl is not None else None
     grad_norm_steps = history.get("grad_norm_step", []) or []
@@ -52,11 +79,12 @@ def _summarize_history(run_name: str, history: Dict[str, List[float]]) -> Dict[s
         "best_val_ppl": best_val_ppl,
         "best_epoch": best_epoch,
         "grad_norm_step_std": grad_norm_std,
+        "parameter_count": parameter_count,
     }
 
 
 def _write_summary(
-    rows: List[Dict[str, float]],
+    rows: List[Dict[str, float | int | None]],
     csv_path: Path,
     md_path: Path,
 ) -> None:
@@ -64,6 +92,7 @@ def _write_summary(
         return
     fieldnames = [
         "run",
+        "parameter_count",
         "epochs",
         "final_train_loss",
         "final_val_loss",
@@ -80,14 +109,17 @@ def _write_summary(
             writer.writerow({key: ("" if row[key] is None else row[key]) for key in fieldnames})
     def _fmt(value: float | None) -> str:
         return "" if value is None else f"{value:.4f}"
+    def _fmt_int(value: float | None) -> str:
+        return "" if value is None else str(int(value))
 
     with md_path.open("w", encoding="utf-8") as f:
-        f.write("|run|epochs|final_train_loss|final_val_loss|final_val_ppl|best_val_ppl|best_epoch|grad_norm_step_std|\n")
-        f.write("|---|---|---|---|---|---|---|---|\n")
+        f.write("|run|parameters|epochs|final_train_loss|final_val_loss|final_val_ppl|best_val_ppl|best_epoch|grad_norm_step_std|\n")
+        f.write("|---|---|---|---|---|---|---|---|---|\n")
         for row in rows:
             f.write(
-                "|{run}|{epochs}|{final_train_loss}|{final_val_loss}|{final_val_ppl}|{best_val_ppl}|{best_epoch}|{grad_norm_step_std}|\n".format(
+                "|{run}|{parameter_count}|{epochs}|{final_train_loss}|{final_val_loss}|{final_val_ppl}|{best_val_ppl}|{best_epoch}|{grad_norm_step_std}|\n".format(
                     run=row["run"],
+                    parameter_count=_fmt_int(row.get("parameter_count")),
                     epochs=row["epochs"],
                     final_train_loss=_fmt(row["final_train_loss"]),
                     final_val_loss=_fmt(row["final_val_loss"]),
@@ -99,10 +131,8 @@ def _write_summary(
             )
 
 
-def _select_best_by_model(
-    summaries: List[Dict[str, float]],
-) -> Dict[str, Dict[str, float]]:
-    best: Dict[str, Dict[str, float]] = {}
+def _select_best_by_model(summaries: List[Dict[str, float | int | None]]) -> Dict[str, Dict[str, float | int | None]]:
+    best: Dict[str, Dict[str, float | int | None]] = {}
     for row in summaries:
         model_name = row["run"].split("_")[0]
         if model_name not in {"fnn", "rnn", "transformer"}:
@@ -176,7 +206,7 @@ def _plot_grouped_by_model(
 
 
 def _plot_final_metric_box(
-    summaries: List[Dict[str, float]],
+    summaries: List[Dict[str, float | int | None]],
     metric_key: str,
     output_dir: Path,
     title: str,
@@ -211,7 +241,9 @@ def _plot_final_metric_box(
     plt.close()
 
 
-def analyze_runs(config_path: str, hist_dir_override: str | None = None) -> Tuple[Path, Path, List[Dict[str, float]]]:
+def analyze_runs(
+    config_path: str, hist_dir_override: str | None = None
+) -> Tuple[Path, Path, List[Dict[str, float | int | None]]]:
     cfg = load_config(config_path)
     output_root = Path(cfg.paths.output_dir)
     hist_dir = Path(hist_dir_override) if hist_dir_override else output_root / "histories"
@@ -223,7 +255,8 @@ def analyze_runs(config_path: str, hist_dir_override: str | None = None) -> Tupl
     if not histories:
         raise RuntimeError(f"No history JSON files found under {hist_dir}")
 
-    summaries = [_summarize_history(name, hist) for name, hist in histories.items()]
+    param_counts = {name: _get_parameter_count_from_ckpt(name, output_root) for name in histories}
+    summaries = [_summarize_history(name, hist, parameter_count=param_counts.get(name)) for name, hist in histories.items()]
     summaries = [row for row in summaries if row["epochs"] > 0]
     summaries.sort(key=lambda r: r["best_val_ppl"] if r["best_val_ppl"] is not None else float("inf"))
 
