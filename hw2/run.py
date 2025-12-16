@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable automatic CUDA_VISIBLE_DEVICES assignment (useful when setting it per terminal).",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume each run from runs/<run_label>/<run_label>_last.pt if it exists.",
+    )
     return parser.parse_args()
 
 
@@ -72,6 +77,14 @@ def main() -> None:
                 run_cfg = copy.deepcopy(cfg)
                 run_cfg.fnn.context_size = context_size
                 run_label = f"{model_name}_ctx{context_size}"
+                resume_path = None
+                if args.resume:
+                    candidate = output_dir / run_label / f"{run_label}_last.pt"
+                    if candidate.exists():
+                        resume_path = str(candidate)
+                        logger.info("Resuming {} from {}", run_label, candidate)
+                    else:
+                        logger.warning("Resume flag set but {} not found; starting fresh.", candidate)
                 gpu_id = None
                 if cfg.experiments.cuda_devices:
                     gpu_id = cfg.experiments.cuda_devices[run_counter % len(cfg.experiments.cuda_devices)]
@@ -84,6 +97,7 @@ def main() -> None:
                     reuse_logger=True,
                     cfg_override=run_cfg,
                     run_name=run_label,
+                    resume_path=resume_path,
                 )
                 histories[run_label] = history
                 logger.info("========== Evaluating {} ==========", run_label.upper())
@@ -104,6 +118,14 @@ def main() -> None:
                 run_cfg = copy.deepcopy(cfg)
                 run_cfg.training.seq_len = max_len
                 run_label = f"{model_name}_len{max_len}"
+                resume_path = None
+                if args.resume:
+                    candidate = output_dir / run_label / f"{run_label}_last.pt"
+                    if candidate.exists():
+                        resume_path = str(candidate)
+                        logger.info("Resuming {} from {}", run_label, candidate)
+                    else:
+                        logger.warning("Resume flag set but {} not found; starting fresh.", candidate)
                 gpu_id = None
                 if cfg.experiments.cuda_devices:
                     gpu_id = cfg.experiments.cuda_devices[run_counter % len(cfg.experiments.cuda_devices)]
@@ -116,6 +138,7 @@ def main() -> None:
                     reuse_logger=True,
                     cfg_override=run_cfg,
                     run_name=run_label,
+                    resume_path=resume_path,
                 )
                 histories[run_label] = history
                 logger.info("========== Evaluating {} ==========", run_label.upper())
