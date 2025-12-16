@@ -42,6 +42,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train language models on the Chinese news corpus.")
     parser.add_argument("--config", type=str, default="config.toml", help="Path to config TOML.")
     parser.add_argument("--model", choices=["fnn", "rnn", "transformer"], required=True, help="Model to train.")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Optional checkpoint path to resume training (expects model+optimizer states).",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Optional run label for outputs/checkpoints (defaults to model name). Use the same value when resuming.",
+    )
     return parser.parse_args()
 
 
@@ -168,6 +180,7 @@ def run_training(
     reuse_logger: bool = False,
     cfg_override: Optional[ExperimentConfig] = None,
     run_name: Optional[str] = None,
+    resume_path: Optional[str] = None,
 ) -> Tuple[Path, Dict[str, List[float]]]:
     cfg = cfg_override or load_config(config_path)
     run_label = run_name or model_name
@@ -209,6 +222,7 @@ def run_training(
 
     best_val_ppl = float("inf")
     best_ckpt_path = output_dir / f"{run_label}_best.pt"
+    last_ckpt_path = output_dir / f"{run_label}_last.pt"
     global_step = 0
     history: Dict[str, list] = {
         "epoch": [],
@@ -224,7 +238,25 @@ def run_training(
         "val_ppl_step": [],
     }
 
-    for epoch in range(1, cfg.training.epochs + 1):
+    start_epoch = 1
+    if resume_path:
+        ckpt_path = Path(resume_path)
+        if ckpt_path.exists():
+            state = torch.load(ckpt_path, map_location=device)
+            model.load_state_dict(state.get("model_state", state))
+            if "optimizer_state" in state:
+                optimizer.load_state_dict(state["optimizer_state"])
+            start_epoch = state.get("epoch", 0) + 1
+            global_step = state.get("global_step", 0)
+            best_val_ppl = state.get("best_val_ppl", best_val_ppl)
+            loaded_history = state.get("history")
+            if isinstance(loaded_history, dict):
+                history.update({k: loaded_history.get(k, v) for k, v in history.items()})
+            logger.info("Resuming from {} (start at epoch {}, global_step {}).", ckpt_path, start_epoch, global_step)
+        else:
+            logger.warning("Resume checkpoint {} not found; starting fresh.", ckpt_path)
+
+    for epoch in range(start_epoch, cfg.training.epochs + 1):
         train_loss, train_ppl, grad_norm, global_step, step_records = train_one_epoch(
             model,
             train_loader,
@@ -264,10 +296,25 @@ def run_training(
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
                     "epoch": epoch,
+                    "global_step": global_step,
+                    "best_val_ppl": best_val_ppl,
+                    "history": history,
                 },
                 best_ckpt_path,
             )
             logger.info("New best checkpoint saved to {}", best_ckpt_path)
+        torch.save(
+            {
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "epoch": epoch,
+                "global_step": global_step,
+                "best_val_ppl": best_val_ppl,
+                "history": history,
+            },
+            last_ckpt_path,
+        )
+        logger.info("Latest checkpoint saved to {}", last_ckpt_path)
 
     logger.info("Best validation perplexity for {}: {:.2f}", run_label, best_val_ppl)
     plot_training_curves(history, output_dir, run_label)
@@ -278,7 +325,7 @@ def run_training(
 
 def main() -> None:
     args = parse_args()
-    run_training(args.model, args.config)
+    run_training(args.model, args.config, run_name=args.run_name, resume_path=args.resume)
 
 
 if __name__ == "__main__":
