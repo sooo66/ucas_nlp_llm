@@ -16,16 +16,53 @@ from utils import load_config, plot_multi_model_steps, prepare_logger
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train and evaluate all language model variants.")
     parser.add_argument("--config", type=str, default="config.toml", help="Path to config TOML.")
+    parser.add_argument(
+        "--model",
+        choices=["fnn", "rnn", "transformer"],
+        nargs="+",
+        help="Restrict to specific model(s); defaults to all.",
+    )
+    parser.add_argument(
+        "--fnn-contexts",
+        type=int,
+        nargs="+",
+        help="Override FNN context sizes for this run (space-separated).",
+    )
+    parser.add_argument(
+        "--max-lengths",
+        type=int,
+        nargs="+",
+        help="Override max sequence lengths for RNN/Transformer (space-separated).",
+    )
+    parser.add_argument(
+        "--cuda-devices",
+        type=str,
+        nargs="+",
+        help="Override CUDA device list for round-robin assignment. Leave unset to use config.toml.",
+    )
+    parser.add_argument(
+        "--no-auto-cuda",
+        action="store_true",
+        help="Disable automatic CUDA_VISIBLE_DEVICES assignment (useful when setting it per terminal).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    if args.fnn_contexts:
+        cfg.experiments.fnn_context_sizes = args.fnn_contexts
+    if args.max_lengths:
+        cfg.experiments.max_lengths = args.max_lengths
+    if args.cuda_devices is not None:
+        cfg.experiments.cuda_devices = args.cuda_devices
+    if args.no_auto_cuda:
+        cfg.experiments.cuda_devices = []
     output_dir = Path(cfg.paths.output_dir)
     prepare_logger(cfg.logging.log_level, output_dir)
 
-    models = ["fnn", "rnn", "transformer"]
+    models = args.model if args.model else ["fnn", "rnn", "transformer"]
     histories: dict = {}
     run_counter = 0
     for model_name in models:

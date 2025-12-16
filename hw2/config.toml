@@ -37,4 +37,4 @@ log_level = "INFO"
 [experiments]
 fnn_context_sizes = [3, 5, 7]
 max_lengths = [64, 128, 256]
-cuda_devices = ["0", "1", "2"]
+cuda_devices = ["0", "1", "2", "3"]
