@@ -1,0 +1,167 @@
+[defaults]
+# 通用配置
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36"
+requests_per_minute = 30
+retry_max = 3
+retry_backoff = 1.5
+output_format = "jsonl"
+output_root = "data/raw"
+normalize_whitespace = true
+
+# =============== XINHUA NET (新华网) ===============
+[[sites]]
+name = "xinhuanet"
+lang = "zh"
+type = "news"
+method = "html_scraping"
+
+# 新华网频道入口页面
+entrypoints = [
+    "http://www.news.cn/politics/",     # 时政
+    "http://www.news.cn/world/",        # 国际
+    "http://www.news.cn/fortune/",      # 财经
+    "http://www.news.cn/local/",        # 地方
+    "http://www.news.cn/sports/",       # 体育
+    "http://www.news.cn/ent/",          # 娱乐
+    "http://www.news.cn/legal/",        # 法治
+    "http://www.news.cn/comments/",     # 评论
+    "http://www.news.cn/gangao/",       # 港澳
+    "http://www.news.cn/tw/",           # 台湾
+    "http://www.news.cn/sikepro/",               # 思客智库
+    "http://www.news.cn/world/globalink/",  # 全球连线
+    "http://education.news.cn/",        # 教育
+    "http://www.news.cn/tech/",         # 科技
+    "http://www.news.cn/shuhua/",       # 书画
+    "http://www.news.cn/health/",       # 健康
+    "http://www.news.cn/milpro/",       # 军事
+    "http://www.news.cn/talking/",      # 访谈
+    "http://www.news.cn/photo/",        # 图片
+    "http://www.news.cn/politics/zywj/", # 中央文件
+    "http://www.news.cn/money/",        # 金融
+    "http://www.news.cn/auto/",         # 汽车
+    "http://www.news.cn/food/",         # 食品
+    "http://www.xinhuanet.com/house/",  # 房产
+    "http://www.news.cn/info/",         # 信息化
+    "https://xszg-pc.app.xinhuanet.com/home",    # 学术中国
+    "http://xczx.news.cn/",                     # 乡村振兴
+    "https://www.news.cn/yinling/",     # 银龄
+    "http://www.news.cn/info/xbsyzg/",  # 溯源中国
+    "http://city.news.cn/",                    # 城市
+    "http://www.news.cn/travel/",      # 旅游
+    "http://www.news.cn/energy/",      # 能源
+    "http://www.news.cn/expo/",        # 会展
+    "http://www.news.cn/caipiao/",     # 彩票
+    "http://www.news.cn/ent/",         # 娱乐
+    "http://www.news.cn/fashion/",     # 时尚
+    "http://www.news.cn/book/",        # 悦读
+    "http://www.news.cn/gongyi/",      # 公益
+    "http://www.news.cn/silkroad/",    # 一带一路
+    "http://www.news.cn/asia/chinese/",# 亚太网
+    "http://www.news.cn/finance/",     # 上市公司
+]
+
+[sites.scraping]
+# 文章链接匹配规则（正则表达式）
+article_url_patterns = [
+  ".*\\/\\d{4}-\\d{2}\\/\\d{2}\\/c_\\d+\\.htm$",
+  "^/[^/]+/\\d{4}-\\d{2}/\\d{2}/c_\\d+\\.htm$"
+]
+
+# 内容选择器（CSS选择器或XPath）
+content_selectors = [
+    "#detail > div",                              # 主要文章内容区域
+    "div.article",                                # 备选文章容器
+    "div#content p"                               # 段落文本
+]
+
+# 标题选择器
+title_selectors = [
+    "h1",
+    "div.title h1",
+    "span.title"
+]
+
+# 需要过滤的元素
+exclude_selectors = [
+    "script",
+    "style", 
+    "nav",
+    "footer",
+    "div.share",
+    "div.related",
+    "div.editor"
+]
+
+# 每个频道爬取的文章数量
+articles_per_channel = 500
+
+# 总目标词数
+total_words = 5000000
+
+[sites.output]
+dir = "data/raw/xinhuanet_zh"
+
+# =============== XINHUA NET (新华网) - ENGLISH VERSION ===============
+[[sites]]
+name = "xinhuanet_en"
+lang = "en"
+type = "news"
+method = "html_scraping"
+
+# English version of Xinhua News entry pages
+entrypoints = [
+    "https://english.news.cn/china/",     # China
+    "https://english.news.cn/world",               # World
+    "https://english.news.cn/list/china-business.htm",  # Biz
+    "https://english.news.cn/culture/",   # Culture & Lifestyle
+    "https://english.news.cn/sports/",    # Sports
+    "https://english.news.cn/indepth/",   # In-depth
+    "https://english.news.cn/asiapacific/", # Asia & Pacific
+    "https://english.news.cn/europe/",    # Europe
+    "https://english.news.cn/africa/",    # Africa
+    "https://english.news.cn/northamerica/", # North America
+    "https://english.news.cn/list/World-americas.htm", # South America
+    "https://english.news.cn/list/World-organizations.htm", # Organizations
+]
+
+[sites.scraping]
+# Article URL matching patterns (regular expressions)
+article_url_patterns = [
+  ".*\\/\\d{4}-\\d{2}\\/\\d{2}\\/c_\\d+\\.htm$",
+  "^/[^/]+/\\d{4}-\\d{2}/\\d{2}/c_\\d+\\.htm$"
+]
+
+# Content selectors (CSS selectors or XPath)
+content_selectors = [
+    "#detail > div",                              # Main article content area
+    "div.article",                                # Alternative article container
+    "div#content p"                               # Paragraph text
+]
+
+# Title selectors
+title_selectors = [
+    "h1",
+    "div.title h1",
+    "span.title"
+]
+
+# Elements to exclude (e.g., ads, navigation, footer, etc.)
+exclude_selectors = [
+    "script",
+    "style", 
+    "nav",
+    "footer",
+    "div.share",
+    "div.related",
+    "div.editor"
+]
+
+# Number of articles to scrape per channel
+articles_per_channel = 500
+
+# Total target word count
+total_words = 5000000
+
+[sites.output]
+# Output directory for scraped data
+dir = "data/raw/xinhuanet_en"
