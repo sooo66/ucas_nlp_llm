@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 from pathlib import Path
+import statistics
 from typing import Dict, List, Tuple
 
 import matplotlib
@@ -38,6 +39,10 @@ def _summarize_history(run_name: str, history: Dict[str, List[float]]) -> Dict[s
     epochs = history.get("epoch", []) or []
     best_val_ppl = min(val_ppls) if val_ppls else None
     best_epoch = val_ppls.index(best_val_ppl) + 1 if best_val_ppl is not None else None
+    grad_norm_steps = history.get("grad_norm_step", []) or []
+    grad_norm_std = (
+        statistics.pstdev(grad_norm_steps) if len(grad_norm_steps) > 1 else (0.0 if grad_norm_steps else None)
+    )
     return {
         "run": run_name,
         "epochs": len(epochs),
@@ -46,6 +51,7 @@ def _summarize_history(run_name: str, history: Dict[str, List[float]]) -> Dict[s
         "final_val_ppl": val_ppls[-1] if val_ppls else None,
         "best_val_ppl": best_val_ppl,
         "best_epoch": best_epoch,
+        "grad_norm_step_std": grad_norm_std,
     }
 
 
@@ -56,7 +62,16 @@ def _write_summary(
 ) -> None:
     if not rows:
         return
-    fieldnames = ["run", "epochs", "final_train_loss", "final_val_loss", "final_val_ppl", "best_val_ppl", "best_epoch"]
+    fieldnames = [
+        "run",
+        "epochs",
+        "final_train_loss",
+        "final_val_loss",
+        "final_val_ppl",
+        "best_val_ppl",
+        "best_epoch",
+        "grad_norm_step_std",
+    ]
     _ensure_dir(csv_path.parent)
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -67,11 +82,11 @@ def _write_summary(
         return "" if value is None else f"{value:.4f}"
 
     with md_path.open("w", encoding="utf-8") as f:
-        f.write("|run|epochs|final_train_loss|final_val_loss|final_val_ppl|best_val_ppl|best_epoch|\n")
-        f.write("|---|---|---|---|---|---|---|\n")
+        f.write("|run|epochs|final_train_loss|final_val_loss|final_val_ppl|best_val_ppl|best_epoch|grad_norm_step_std|\n")
+        f.write("|---|---|---|---|---|---|---|---|\n")
         for row in rows:
             f.write(
-                "|{run}|{epochs}|{final_train_loss}|{final_val_loss}|{final_val_ppl}|{best_val_ppl}|{best_epoch}|\n".format(
+                "|{run}|{epochs}|{final_train_loss}|{final_val_loss}|{final_val_ppl}|{best_val_ppl}|{best_epoch}|{grad_norm_step_std}|\n".format(
                     run=row["run"],
                     epochs=row["epochs"],
                     final_train_loss=_fmt(row["final_train_loss"]),
@@ -79,6 +94,7 @@ def _write_summary(
                     final_val_ppl=_fmt(row["final_val_ppl"]),
                     best_val_ppl=_fmt(row["best_val_ppl"]),
                     best_epoch=row["best_epoch"] or "",
+                    grad_norm_step_std=_fmt(row["grad_norm_step_std"]),
                 )
             )
 
@@ -129,6 +145,72 @@ def _plot_multi_model_epochs(
     plt.close()
 
 
+def _plot_grouped_by_model(
+    histories: Dict[str, Dict[str, List[float]]], output_dir: Path, metric_key: str, ylabel: str, filename_suffix: str
+) -> None:
+    grouped: Dict[str, List[Tuple[str, Dict[str, List[float]]]]] = {}
+    for name, hist in histories.items():
+        model_name = name.split("_")[0]
+        grouped.setdefault(model_name, []).append((name, hist))
+    for model_name, items in grouped.items():
+        plt.figure()
+        plotted = False
+        for run_name, hist in items:
+            epochs = hist.get("epoch", [])
+            ys = hist.get(metric_key, [])
+            if not epochs or not ys:
+                continue
+            plt.plot(epochs, ys, marker="o", label=run_name.upper())
+            plotted = True
+        if not plotted:
+            plt.close()
+            continue
+        plt.xlabel("Epoch")
+        plt.ylabel(ylabel)
+        plt.title(f"{model_name.upper()} ({metric_key}) across settings")
+        plt.legend()
+        plt.grid(True, linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(output_dir / f"{model_name}_{filename_suffix}.png")
+        plt.close()
+
+
+def _plot_final_metric_box(
+    summaries: List[Dict[str, float]],
+    metric_key: str,
+    output_dir: Path,
+    title: str,
+    filename: str,
+) -> None:
+    grouped: Dict[str, List[float]] = {}
+    for row in summaries:
+        model_name = row["run"].split("_")[0]
+        value = row.get(metric_key)
+        if value is None:
+            continue
+        grouped.setdefault(model_name, []).append(value)
+    if not grouped:
+        return
+    labels = []
+    data = []
+    for model_name in sorted(grouped.keys()):
+        values = grouped[model_name]
+        if not values:
+            continue
+        labels.append(model_name.upper())
+        data.append(values)
+    if not data:
+        return
+    plt.figure()
+    plt.boxplot(data, labels=labels, showmeans=True)
+    plt.ylabel(metric_key)
+    plt.title(title)
+    plt.grid(True, axis="y", linestyle="--", alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(output_dir / filename)
+    plt.close()
+
+
 def analyze_runs(config_path: str, hist_dir_override: str | None = None) -> Tuple[Path, Path, List[Dict[str, float]]]:
     cfg = load_config(config_path)
     output_root = Path(cfg.paths.output_dir)
@@ -165,10 +247,27 @@ def analyze_runs(config_path: str, hist_dir_override: str | None = None) -> Tupl
         ylabel="Loss",
         filename="multi_model_val_loss.png",
     )
+    _plot_grouped_by_model(histories, figures_dir, metric_key="val_ppl", ylabel="Perplexity", filename_suffix="val_ppl_all")
+    _plot_grouped_by_model(histories, figures_dir, metric_key="val_loss", ylabel="Loss", filename_suffix="val_loss_all")
+    _plot_grouped_by_model(histories, figures_dir, metric_key="grad_norm", ylabel="Grad Norm", filename_suffix="grad_norm_all")
 
     summary_csv = output_root / "summary.csv"
     summary_md = output_root / "summary.md"
     _write_summary(summaries, summary_csv, summary_md)
+    _plot_final_metric_box(
+        summaries,
+        metric_key="final_val_ppl",
+        output_dir=figures_dir,
+        title="Final Validation Perplexity Spread",
+        filename="final_val_ppl_box.png",
+    )
+    _plot_final_metric_box(
+        summaries,
+        metric_key="grad_norm_step_std",
+        output_dir=figures_dir,
+        title="Gradient Norm Variability (Step-level)",
+        filename="grad_norm_step_std_box.png",
+    )
     logger.info("Wrote summary table to {} and {}", summary_csv, summary_md)
     logger.info("Saved multi-model comparison plots to {}", figures_dir)
     return summary_csv, summary_md, summaries
