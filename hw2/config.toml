@@ -11,6 +11,7 @@ learning_rate = 0.0003
 weight_decay = 0.01
 grad_clip = 1.0
 seq_len = 128
+log_interval = 100
 seed = 42
 device = "cuda"
 
@@ -24,11 +25,16 @@ embedding_dim = 256
 hidden_dim = 512
 
 [transformer]
-d_model = 512
-num_heads = 8
-num_layers = 6
-ffn_dim = 2048
+d_model = 256
+num_heads = 4
+num_layers = 4
+ffn_dim = 1024
 dropout = 0.1
 
 [logging]
 log_level = "INFO"
+
+[experiments]
+fnn_context_sizes = [3, 5, 7]
+max_lengths = [64, 128, 256]
+cuda_devices = ["0", "1", "2"]

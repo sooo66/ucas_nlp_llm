@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import torch
 from loguru import logger
@@ -33,7 +33,7 @@ from utils import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate saved checkpoints.")
-    parser.add_argument("--config", type=str, default="Config.toml", help="Path to config.")
+    parser.add_argument("--config", type=str, default="config.toml", help="Path to config.")
     parser.add_argument("--model", choices=["fnn", "rnn", "transformer"], required=True, help="Model to evaluate.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Checkpoint path from training.")
     return parser.parse_args()
@@ -98,11 +98,15 @@ def build_validation_loader(
 def run_evaluation(
     model_name: str,
     checkpoint_path: str,
-    config_path: str = "Config.toml",
+    config_path: str = "config.toml",
     reuse_logger: bool = False,
+    cfg_override: Optional[ExperimentConfig] = None,
+    run_name: Optional[str] = None,
 ) -> Tuple[float, float]:
-    cfg = load_config(config_path)
-    eval_dir = Path(cfg.paths.output_dir) / "eval"
+    cfg = cfg_override or load_config(config_path)
+    run_label = run_name or model_name
+    run_dir = Path(cfg.paths.output_dir) / run_label
+    eval_dir = run_dir / "eval"
     if not reuse_logger:
         prepare_logger(cfg.logging.log_level, eval_dir)
     eval_dir.mkdir(parents=True, exist_ok=True)
@@ -130,8 +134,8 @@ def run_evaluation(
         pin_memory=device.type == "cuda",
     )
     val_loss, val_ppl = evaluate_model(model, val_loader, pad_idx, device)
-    logger.info("[{}] Validation loss={:.4f} perplexity={:.2f}", model_name, val_loss, val_ppl)
-    plot_eval_metrics({"loss": val_loss, "perplexity": val_ppl}, Path(cfg.paths.output_dir), model_name)
+    logger.info("[{}] Validation loss={:.4f} perplexity={:.2f}", run_label, val_loss, val_ppl)
+    plot_eval_metrics({"loss": val_loss, "perplexity": val_ppl}, run_dir, run_label)
     return val_loss, val_ppl
 
 

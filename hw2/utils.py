@@ -1,6 +1,7 @@
 """Utility helpers for configuration, logging, and evaluation."""
 from __future__ import annotations
 
+import json
 import random
 import sys
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ class TrainingConfig:
     weight_decay: float
     grad_clip: float
     seq_len: int
+    log_interval: int
     seed: int
     device: str
 
@@ -62,6 +64,13 @@ class TransformerConfig:
 
 
 @dataclass
+class SweepConfig:
+    fnn_context_sizes: List[int]
+    max_lengths: List[int]
+    cuda_devices: List[str]
+
+
+@dataclass
 class LoggingConfig:
     log_level: str
 
@@ -73,17 +82,24 @@ class ExperimentConfig:
     fnn: FNNConfig
     rnn: RNNConfig
     transformer: TransformerConfig
+    experiments: SweepConfig
     logging: LoggingConfig
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
     cfg_dict = toml.load(path)
+    sweep_dict = cfg_dict.get("experiments", {})
     return ExperimentConfig(
         paths=PathsConfig(**cfg_dict["paths"]),
         training=TrainingConfig(**cfg_dict["training"]),
         fnn=FNNConfig(**cfg_dict["fnn"]),
         rnn=RNNConfig(**cfg_dict["rnn"]),
         transformer=TransformerConfig(**cfg_dict["transformer"]),
+        experiments=SweepConfig(
+            fnn_context_sizes=sweep_dict.get("fnn_context_sizes", [cfg_dict["fnn"]["context_size"]]),
+            max_lengths=sweep_dict.get("max_lengths", [cfg_dict["training"]["seq_len"]]),
+            cuda_devices=sweep_dict.get("cuda_devices", []),
+        ),
         logging=LoggingConfig(**cfg_dict["logging"]),
     )
 
@@ -205,6 +221,32 @@ def plot_training_curves(history: Dict[str, List[float]], output_dir: Path, mode
         )
 
 
+def plot_step_curves(history: Dict[str, List[float]], output_dir: Path, model_name: str) -> None:
+    """Plot step-wise metrics if they exist."""
+    if not history.get("step"):
+        return
+    fig_dir = output_dir / "figures"
+    _ensure_fig_dir(fig_dir)
+
+    def _plot(xs: List[float], ys: List[float], title: str, ylabel: str, filename: str) -> None:
+        if not xs or not ys:
+            return
+        plt.figure()
+        plt.plot(xs, ys, label=model_name.upper())
+        plt.xlabel("Step")
+        plt.ylabel(ylabel)
+        plt.title(title)
+        plt.legend()
+        plt.grid(True, linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(fig_dir / f"{model_name}_{filename}.png")
+        plt.close()
+
+    _plot(history.get("step", []), history.get("train_loss_step", []), "Step vs Training Loss", "Loss", "step_loss")
+    _plot(history.get("val_step", []), history.get("val_ppl_step", []), "Step vs Validation Perplexity", "PPL", "step_val_ppl")
+    _plot(history.get("step", []), history.get("grad_norm_step", []), "Step vs Gradient Norm", "L2 Norm", "step_grad_norm")
+
+
 def plot_eval_metrics(metrics: Dict[str, float], output_dir: Path, model_name: str) -> None:
     fig_dir = output_dir / "figures"
     _ensure_fig_dir(fig_dir)
@@ -240,3 +282,54 @@ def evaluate_model(
         total_tokens += valid
     mean_loss = total_loss / max(1, total_tokens)
     return mean_loss, compute_perplexity(mean_loss)
+
+
+def save_history(history: Dict[str, List[float]], output_dir: Path, run_name: str) -> Path:
+    """Persist training curves for later cross-model comparison."""
+    hist_dir = output_dir / "histories"
+    hist_dir.mkdir(parents=True, exist_ok=True)
+    path = hist_dir / f"{run_name}.json"
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(history, f)
+    return path
+
+
+def load_history(path: Path) -> Dict[str, List[float]]:
+    if not path.exists():
+        raise FileNotFoundError(f"History file {path} missing.")
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def plot_multi_model_steps(histories: Dict[str, Dict[str, List[float]]], output_dir: Path) -> None:
+    """Overlay step-wise metrics across models on shared figures."""
+    if not histories:
+        return
+    fig_dir = output_dir / "figures"
+    _ensure_fig_dir(fig_dir)
+
+    def _plot(metric_key: str, step_key: str, title: str, ylabel: str, filename: str) -> None:
+        plt.figure()
+        plotted = False
+        for name, hist in histories.items():
+            xs = hist.get(step_key, [])
+            ys = hist.get(metric_key, [])
+            if not xs or not ys:
+                continue
+            plt.plot(xs, ys, marker="o", label=name.upper())
+            plotted = True
+        if not plotted:
+            plt.close()
+            return
+        plt.xlabel("Step")
+        plt.ylabel(ylabel)
+        plt.title(title)
+        plt.legend()
+        plt.grid(True, linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(fig_dir / filename)
+        plt.close()
+
+    _plot("train_loss_step", "step", "Step vs Training Loss (Models)", "Loss", "multi_step_train_loss.png")
+    _plot("val_ppl_step", "val_step", "Step vs Validation Perplexity (Models)", "Perplexity", "multi_step_val_ppl.png")
+    _plot("grad_norm_step", "step", "Step vs Gradient Norm (Models)", "L2 Norm", "multi_step_grad_norm.png")

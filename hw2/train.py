@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from loguru import logger
@@ -28,9 +28,11 @@ from utils import (
     load_config,
     load_tokenizer,
     masked_cross_entropy,
+    plot_step_curves,
     plot_training_curves,
     prepare_logger,
     read_corpus_lines,
+    save_history,
     set_seed,
     split_corpus,
 )
@@ -38,7 +40,7 @@ from utils import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train language models on the Chinese news corpus.")
-    parser.add_argument("--config", type=str, default="Config.toml", help="Path to config TOML.")
+    parser.add_argument("--config", type=str, default="config.toml", help="Path to config TOML.")
     parser.add_argument("--model", choices=["fnn", "rnn", "transformer"], required=True, help="Model to train.")
     return parser.parse_args()
 
@@ -110,12 +112,16 @@ def train_one_epoch(
     device: torch.device,
     grad_clip: float,
     epoch: int,
-) -> Tuple[float, float, float]:
+    log_interval: int,
+    global_step: int,
+) -> Tuple[float, float, float, int, list]:
     model.train()
     total_loss = 0.0
     total_tokens = 0
     grad_norm_total = 0.0
     grad_norm_steps = 0
+    step_records = []
+    interval = max(1, log_interval)
     progress = tqdm(data_loader, desc=f"Epoch {epoch}", leave=False, dynamic_ncols=True)
     for step, (inputs, targets) in enumerate(progress, 1):
         inputs = inputs.to(device)
@@ -124,6 +130,7 @@ def train_one_epoch(
         logits = model(inputs)
         loss, valid = masked_cross_entropy(logits, targets, pad_idx)
         loss.backward()
+        global_step += 1
         if grad_clip > 0:
             grad_norm = clip_grad_norm_(model.parameters(), grad_clip).item()
         else:
@@ -147,15 +154,26 @@ def train_one_epoch(
                 loss.item(),
                 compute_perplexity(loss.item()),
             )
+        if global_step % interval == 0 or step == len(data_loader):
+            step_records.append({"step": global_step, "train_loss": loss.item(), "grad_norm": grad_norm})
     progress.close()
     mean_loss = total_loss / max(1, total_tokens)
     avg_grad_norm = grad_norm_total / max(1, grad_norm_steps)
-    return mean_loss, compute_perplexity(mean_loss), avg_grad_norm
+    return mean_loss, compute_perplexity(mean_loss), avg_grad_norm, global_step, step_records
 
 
-def run_training(model_name: str, config_path: str = "Config.toml", reuse_logger: bool = False) -> Path:
-    cfg = load_config(config_path)
-    output_dir = Path(cfg.paths.output_dir)
+def run_training(
+    model_name: str,
+    config_path: str = "config.toml",
+    reuse_logger: bool = False,
+    cfg_override: Optional[ExperimentConfig] = None,
+    run_name: Optional[str] = None,
+) -> Tuple[Path, Dict[str, List[float]]]:
+    cfg = cfg_override or load_config(config_path)
+    run_label = run_name or model_name
+    output_root = Path(cfg.paths.output_dir)
+    output_dir = output_root / run_label
+    output_dir.mkdir(parents=True, exist_ok=True)
     if not reuse_logger:
         prepare_logger(cfg.logging.log_level, output_dir)
     set_seed(cfg.training.seed)
@@ -184,13 +202,14 @@ def run_training(model_name: str, config_path: str = "Config.toml", reuse_logger
 
     vocab_size = tokenizer.vocab_size + len(tokenizer.get_added_vocab())
     model = instantiate_model(model_name, cfg, vocab_size, pad_idx).to(device)
-    logger.info("Training {} with {} parameters.", model_name, count_parameters(model))
+    logger.info("Training {} ({}) with {} parameters.", model_name, run_label, count_parameters(model))
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay
     )
 
     best_val_ppl = float("inf")
-    best_ckpt_path = output_dir / f"{model_name}_best.pt"
+    best_ckpt_path = output_dir / f"{run_label}_best.pt"
+    global_step = 0
     history: Dict[str, list] = {
         "epoch": [],
         "train_loss": [],
@@ -198,11 +217,24 @@ def run_training(model_name: str, config_path: str = "Config.toml", reuse_logger
         "val_loss": [],
         "val_ppl": [],
         "grad_norm": [],
+        "step": [],
+        "train_loss_step": [],
+        "grad_norm_step": [],
+        "val_step": [],
+        "val_ppl_step": [],
     }
 
     for epoch in range(1, cfg.training.epochs + 1):
-        train_loss, train_ppl, grad_norm = train_one_epoch(
-            model, train_loader, optimizer, pad_idx, device, cfg.training.grad_clip, epoch
+        train_loss, train_ppl, grad_norm, global_step, step_records = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            pad_idx,
+            device,
+            cfg.training.grad_clip,
+            epoch,
+            cfg.training.log_interval,
+            global_step,
         )
         val_loss, val_ppl = evaluate_model(model, val_loader, pad_idx, device)
         logger.info(
@@ -213,12 +245,18 @@ def run_training(model_name: str, config_path: str = "Config.toml", reuse_logger
             val_loss,
             val_ppl,
         )
+        for record in step_records:
+            history["step"].append(record["step"])
+            history["train_loss_step"].append(record["train_loss"])
+            history["grad_norm_step"].append(record["grad_norm"])
         history["epoch"].append(epoch)
         history["train_loss"].append(train_loss)
         history["train_ppl"].append(train_ppl)
         history["val_loss"].append(val_loss)
         history["val_ppl"].append(val_ppl)
         history["grad_norm"].append(grad_norm)
+        history["val_step"].append(global_step)
+        history["val_ppl_step"].append(val_ppl)
         if val_ppl < best_val_ppl:
             best_val_ppl = val_ppl
             torch.save(
@@ -231,9 +269,11 @@ def run_training(model_name: str, config_path: str = "Config.toml", reuse_logger
             )
             logger.info("New best checkpoint saved to {}", best_ckpt_path)
 
-    logger.info("Best validation perplexity for {}: {:.2f}", model_name, best_val_ppl)
-    plot_training_curves(history, output_dir, model_name)
-    return best_ckpt_path
+    logger.info("Best validation perplexity for {}: {:.2f}", run_label, best_val_ppl)
+    plot_training_curves(history, output_dir, run_label)
+    plot_step_curves(history, output_dir, run_label)
+    save_history(history, output_root, run_label)
+    return best_ckpt_path, history
 
 
 def main() -> None:
